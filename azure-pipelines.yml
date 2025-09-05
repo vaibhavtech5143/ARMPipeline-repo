@@ -1,28 +1,46 @@
-# Starter pipeline
-# Start with a minimal pipeline that you can customize to build and deploy your code.
-# Add steps that build, run tests, deploy, and more:
-# https://aka.ms/yaml
-
 trigger:
 - main
 
 pool:
   vmImage: ubuntu-latest
 
-steps:
-- task: AzureResourceManagerTemplateDeployment@3
-  inputs:
-    deploymentScope: 'Resource Group'
-    azureResourceManagerConnection: 'ARMPipeline-srvcConn'
-    subscriptionId: '824f5b2c-9187-414d-90b2-c510f851ea4e'
-    action: 'Create Or Update Resource Group'
-    resourceGroupName: 'rg-ARMPipeline'
-    location: 'Central US'
-    templateLocation: 'URL of the file'
-    csmFileLink: 'https://raw.githubusercontent.com/vaibhavtech5143/ARMPipeline-repo/refs/heads/main/create_storage_cont/azuredeploy.json'
-    overrideParameters: |
-      -storageAccountName
-      "storearmpipeline20062025"
-      containerName"contarmpipeline20062025"
-    deploymentMode: 'Incremental'
-    deploymentName: 'ARMPipelineDeployment'
+variables:
+- group: my-secrets-group   # 👈 Contains DOCKERHUB_USERNAME, DOCKERHUB_TOKEN, PRISMA_API_KEY
+
+jobs:
+- job: Scan_And_Copy_Image
+  displayName: Scan image with Twistcli and copy if safe
+  steps:
+  - script: |
+      echo "⬇️ Downloading twistcli binary"
+      curl -o twistcli https://app0.prismacloud.io/api/v1/util/twistcli
+      chmod +x twistcli
+
+      echo "🔐 Logging into Docker Hub"
+      echo "$(DOCKERHUB_TOKEN)" | docker login -u "$(DOCKERHUB_USERNAME)" --password-stdin
+
+      echo "📥 Pulling public image"
+      docker pull nginx:latest
+
+      echo "🛡️ Scanning image with twistcli"
+      ./twistcli images scan \
+        --address app0.prismacloud.io \
+        --bc-api-key $(PRISMA_API_KEY) \
+        nginx:latest
+
+      if [ $? -ne 0 ]; then
+        echo "❌ Vulnerabilities found! Aborting pipeline."
+        exit 1
+      fi
+
+      RANDOM_SUFFIX=$(date +%s)
+      TARGET_IMAGE="$(DOCKERHUB_USERNAME)/nginx-clone:copied-$RANDOM_SUFFIX"
+
+      echo "🏷️ Tagging image as $TARGET_IMAGE"
+      docker tag nginx:latest $TARGET_IMAGE
+
+      echo "🚀 Pushing image to Docker Hub: $TARGET_IMAGE"
+      docker push $TARGET_IMAGE
+
+      echo "✅ Image copied successfully."
+    displayName: Scan and Push Docker Image
